@@ -2,216 +2,382 @@ import { useEffect, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 
+import { OceanParticles } from '@/lib/OceanParticles';
+import { fetchOceanCurrentField } from '@/lib/windyApi';
+import { DEFAULT_SHARK_HOTSPOTS, generateSharkActivityGrid, type SharkHotspot } from '@/lib/sharkData';
+import { addWindyMarkers, GULF_SAMPLE_POINTS } from '@/lib/mapHelpers';
+import { createSharkPopupHTML } from '@/lib/sharkPopup';
+import { MapLayerControls, type LayerVisibility } from './MapLayerControls';
+
+export interface Viewport {
+  center: { lng: number; lat: number };
+  zoom: number;
+  bounds: {
+    north: number;
+    south: number;
+    east: number;
+    west: number;
+  };
+  bearing: number;
+  pitch: number;
+}
+
 interface MapboxMapProps {
   lat?: number;
   lng?: number;
   zoom?: number;
   styleUrl?: string;
   className?: string;
+  sharkHotspots?: SharkHotspot[];
+  onViewportChange?: (viewport: Viewport) => void;
 }
-
-// Generate dense grid of shark activity data points for smooth raster-like visualization
-const generateSharkActivityGrid = () => {
-  const features = [];
-
-  // Define hotspot centers with their intensity
-  const hotspots = [
-    { lng: -97.2, lat: 25.8, intensity: 0.95, radius: 0.3 },
-    { lng: -97.5, lat: 26.1, intensity: 0.90, radius: 0.25 },
-    { lng: -96.8, lat: 25.6, intensity: 0.65, radius: 0.2 },
-    { lng: -97.7, lat: 25.6, intensity: 0.55, radius: 0.2 },
-    { lng: -96.4, lat: 25.95, intensity: 0.25, radius: 0.15 },
-    { lng: -97.8, lat: 26.2, intensity: 0.20, radius: 0.15 },
-    { lng: -96.3, lat: 25.3, intensity: 0.15, radius: 0.15 },
-  ];
-
-  // Generate a dense grid of points
-  for (let lng = -98.0; lng <= -96.0; lng += 0.05) {
-    for (let lat = 25.0; lat <= 26.5; lat += 0.05) {
-      let intensity = 0.05; // Base ocean intensity
-
-      // Calculate intensity based on distance to hotspots
-      hotspots.forEach(hotspot => {
-        const distance = Math.sqrt(
-          Math.pow(lng - hotspot.lng, 2) + Math.pow(lat - hotspot.lat, 2)
-        );
-
-        if (distance < hotspot.radius) {
-          const factor = 1 - (distance / hotspot.radius);
-          intensity = Math.max(intensity, hotspot.intensity * factor);
-        }
-      });
-
-      features.push({
-        type: 'Feature',
-        properties: { intensity },
-        geometry: { type: 'Point', coordinates: [lng, lat] }
-      });
-    }
-  }
-
-  return {
-    type: 'FeatureCollection',
-    features
-  };
-};
-
-const sharkActivityData = generateSharkActivityGrid();
 
 export default function MapboxMap({
   lat = 25.9,
   lng = -97.0,
   zoom = 7,
   styleUrl = 'mapbox://styles/mapbox/light-v11',
-  className = 'map h-full w-full'
+  className = 'map h-full w-full',
+  sharkHotspots = DEFAULT_SHARK_HOTSPOTS,
+  onViewportChange
 }: MapboxMapProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
+  const particleSystem = useRef<OceanParticles | null>(null);
+  const windyMarkers = useRef<mapboxgl.Marker[]>([]);
+
   const [error, setError] = useState<string | null>(null);
+  const [layersVisible, setLayersVisible] = useState<LayerVisibility>({
+    sharkActivity: true,
+    oceanParticles: true,
+    windyData: true
+  });
+  const [viewport, setViewport] = useState<Viewport>({
+    center: { lng, lat },
+    zoom,
+    bounds: { north: 0, south: 0, east: 0, west: 0 },
+    bearing: 0,
+    pitch: 0
+  });
 
   useEffect(() => {
-    if (!mapContainer.current) return;
-    if (map.current) return; // Initialize map only once
+    if (!mapContainer.current || map.current) return;
+
+    initializeMap();
+
+    return cleanup;
+  }, []);
+
+  useEffect(() => {
+    if (!map.current) return;
+    updateLayerVisibility();
+  }, [layersVisible]);
+
+  function initializeMap() {
+    const token = import.meta.env.PUBLIC_MAPBOX_TOKEN;
+
+    if (!token) {
+      setError('Missing PUBLIC_MAPBOX_TOKEN');
+      console.error('Mapbox token is missing. Please add PUBLIC_MAPBOX_TOKEN to your .env file');
+      return;
+    }
 
     try {
-      const token = import.meta.env.PUBLIC_MAPBOX_TOKEN;
-
-      if (!token) {
-        setError('Missing PUBLIC_MAPBOX_TOKEN');
-        console.error('Mapbox token is missing. Please add PUBLIC_MAPBOX_TOKEN to your .env file');
-        return;
-      }
-
       mapboxgl.accessToken = token;
 
       map.current = new mapboxgl.Map({
-        container: mapContainer.current,
+        container: mapContainer.current!,
         style: styleUrl,
         center: [lng, lat],
         zoom: zoom,
         attributionControl: true
       });
 
-      map.current.addControl(new mapboxgl.NavigationControl(), 'top-right');
-      map.current.addControl(new mapboxgl.FullscreenControl(), 'top-right');
-      map.current.addControl(new mapboxgl.ScaleControl({ unit: 'metric' }), 'bottom-left');
-
-      // Add shark activity heatmap when map loads
-      map.current.on('load', () => {
-        if (!map.current) return;
-
-        // Add shark activity data source
-        map.current.addSource('shark-activity', {
-          type: 'geojson',
-          data: sharkActivityData as any
-        });
-
-        // Add smooth weather-style heatmap layer with refined colors
-        map.current.addLayer({
-          id: 'shark-heatmap',
-          type: 'heatmap',
-          source: 'shark-activity',
-          paint: {
-            // Weight points by intensity
-            'heatmap-weight': ['get', 'intensity'],
-
-            // Consistent intensity for smooth blending
-            'heatmap-intensity': 1.2,
-
-            // Weather map color scheme matching the reference image
-            'heatmap-color': [
-              'interpolate',
-              ['linear'],
-              ['heatmap-density'],
-              0, 'rgba(0, 0, 0, 0)',              // transparent
-              0.01, 'rgba(173, 216, 230, 0)',     // very light blue (transparent transition)
-              0.1, 'rgba(135, 206, 250, 0.35)',   // light sky blue
-              0.2, 'rgba(100, 200, 255, 0.45)',   // lighter blue
-              0.35, 'rgba(144, 238, 144, 0.55)',  // light green
-              0.5, 'rgba(255, 255, 153, 0.65)',   // pale yellow
-              0.65, 'rgba(255, 204, 102, 0.75)',  // light orange
-              0.8, 'rgba(255, 140, 66, 0.85)',    // orange
-              0.9, 'rgba(235, 100, 52, 0.9)',     // dark orange/red
-              1, 'rgba(200, 50, 50, 0.95)'        // deep red
-            ],
-
-            // Larger radius for smoother weather-map effect
-            'heatmap-radius': [
-              'interpolate',
-              ['linear'],
-              ['zoom'],
-              4, 15,
-              7, 35,
-              10, 60
-            ],
-
-            // High opacity for visibility
-            'heatmap-opacity': 0.75
-          }
-        });
-
-        // Add interactive info on click
-        map.current.on('click', (e) => {
-          if (!map.current) return;
-
-          // Query features at click point
-          const features = map.current.queryRenderedFeatures(e.point, {
-            layers: ['shark-heatmap']
-          });
-
-          if (features.length > 0) {
-            const intensity = features[0].properties?.intensity || 0;
-            const riskLevel = intensity > 0.7 ? 'High' : intensity > 0.4 ? 'Medium' : 'Low';
-            const color = intensity > 0.7 ? '#dc3232' : intensity > 0.4 ? '#ffcc66' : '#87ceeb';
-
-            const popupContent = `
-              <div style="padding: 14px; min-width: 220px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: rgba(255,255,255,0.98); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
-                <h3 style="margin: 0 0 10px 0; font-weight: 600; color: #333; font-size: 15px; display: flex; align-items: center; gap: 6px;">
-                  🦈 Shark Activity
-                </h3>
-                <div style="background: linear-gradient(135deg, ${color}15, ${color}08); padding: 10px; border-radius: 6px; border-left: 3px solid ${color}; margin-bottom: 8px;">
-                  <p style="margin: 0; font-size: 13px; color: #555;"><strong style="color: #333;">Risk:</strong> <span style="color: ${color}; font-weight: 600;">${riskLevel}</span></p>
-                  <p style="margin: 6px 0 0 0; font-size: 13px; color: #555;"><strong style="color: #333;">Activity:</strong> ${(intensity * 100).toFixed(0)}%</p>
-                </div>
-                <p style="margin: 0; font-size: 11px; color: #888; font-style: italic;">
-                  ${intensity > 0.7 ? 'High shark concentration' :
-                    intensity > 0.4 ? 'Moderate activity level' :
-                    'Safe swimming conditions'}
-                </p>
-              </div>
-            `;
-
-            new mapboxgl.Popup({
-              closeButton: true,
-              closeOnClick: true,
-              maxWidth: '300px'
-            })
-              .setLngLat(e.lngLat)
-              .setHTML(popupContent)
-              .addTo(map.current);
-          }
-        });
-
-        // Change cursor on hover
-        map.current.on('mouseenter', 'shark-heatmap', () => {
-          if (map.current) map.current.getCanvas().style.cursor = 'pointer';
-        });
-
-        map.current.on('mouseleave', 'shark-heatmap', () => {
-          if (map.current) map.current.getCanvas().style.cursor = '';
-        });
-      });
-
+      addMapControls();
+      setupViewportTracking();
+      map.current.on('load', handleMapLoad);
     } catch (err) {
       console.error('Error initializing map:', err);
       setError(err instanceof Error ? err.message : 'Unknown error');
     }
+  }
 
-    return () => {
-      map.current?.remove();
-      map.current = null;
+  function addMapControls() {
+    if (!map.current) return;
+
+    map.current.addControl(new mapboxgl.NavigationControl(), 'top-right');
+    map.current.addControl(new mapboxgl.FullscreenControl(), 'top-right');
+    map.current.addControl(new mapboxgl.ScaleControl({ unit: 'metric' }), 'bottom-left');
+  }
+
+  function setupViewportTracking() {
+    if (!map.current) return;
+
+    const updateViewportState = () => {
+      if (!map.current) return;
+
+      const center = map.current.getCenter();
+      const currentZoom = map.current.getZoom();
+      const currentBounds = map.current.getBounds();
+      if (!currentBounds) return;
+
+      const newViewport: Viewport = {
+        center: { lng: center.lng, lat: center.lat },
+        zoom: currentZoom,
+        bounds: {
+          north: currentBounds.getNorth(),
+          south: currentBounds.getSouth(),
+          east: currentBounds.getEast(),
+          west: currentBounds.getWest()
+        },
+        bearing: map.current.getBearing(),
+        pitch: map.current.getPitch()
+      };
+
+      setViewport(newViewport);
+      onViewportChange?.(newViewport);
     };
-  }, []);
+
+    map.current.on('move', updateViewportState);
+    map.current.on('zoom', updateViewportState);
+    map.current.on('rotate', updateViewportState);
+    map.current.on('pitch', updateViewportState);
+
+    updateViewportState();
+  }
+
+  async function handleMapLoad() {
+    if (!map.current) return;
+
+    const mapBounds = map.current.getBounds();
+    if (!mapBounds) return;
+
+    await Promise.all([
+      setupOceanParticles(mapBounds),
+      setupSharkHeatmap(),
+      setupWindyMarkers()
+    ]);
+  }
+
+  async function setupOceanParticles(mapBounds: mapboxgl.LngLatBounds) {
+    if (!map.current) return;
+
+    const bounds = {
+      minLat: mapBounds.getSouth(),
+      maxLat: mapBounds.getNorth(),
+      minLon: mapBounds.getWest(),
+      maxLon: mapBounds.getEast()
+    };
+
+    const container = map.current.getCanvas();
+    particleSystem.current = new OceanParticles(
+      container.width,
+      container.height,
+      bounds,
+      5000
+    );
+
+    particleSystem.current.setMap(map.current);
+
+    // Fetch ocean current data
+    console.log('Fetching ocean current data for the visible area...');
+    const currentData = await fetchOceanCurrentField({
+      north: bounds.maxLat,
+      south: bounds.minLat,
+      west: bounds.minLon,
+      east: bounds.maxLon
+    });
+
+    if (particleSystem.current) {
+      console.log('Ocean current data loaded:', currentData.length, 'data points');
+      particleSystem.current.setCurrentField(currentData);
+    }
+
+    addParticleLayer(bounds);
+    startParticleAnimation();
+    setupResizeHandler();
+  }
+
+  function addParticleLayer(bounds: { minLat: number; maxLat: number; minLon: number; maxLon: number }) {
+    if (!map.current || !particleSystem.current) return;
+
+    map.current.addSource('ocean-particles', {
+      type: 'canvas' as any,
+      canvas: particleSystem.current.getCanvas(),
+      coordinates: [
+        [bounds.minLon - 1, bounds.maxLat + 1],
+        [bounds.maxLon + 1, bounds.maxLat + 1],
+        [bounds.maxLon + 1, bounds.minLat - 1],
+        [bounds.minLon - 1, bounds.minLat - 1]
+      ],
+      animate: true
+    });
+
+    map.current.addLayer({
+      id: 'ocean-particle-layer',
+      type: 'raster',
+      source: 'ocean-particles',
+      paint: {
+        'raster-opacity': 0.7,
+        'raster-fade-duration': 0
+      }
+    });
+  }
+
+  function startParticleAnimation() {
+    const animate = () => {
+      if (particleSystem.current && map.current) {
+        particleSystem.current.update();
+        map.current.triggerRepaint();
+        requestAnimationFrame(animate);
+      }
+    };
+    animate();
+  }
+
+  function setupResizeHandler() {
+    if (!map.current) return;
+
+    map.current.on('resize', () => {
+      if (particleSystem.current && map.current) {
+        const canvas = map.current.getCanvas();
+        particleSystem.current.resize(canvas.width, canvas.height);
+      }
+    });
+  }
+
+  function setupSharkHeatmap() {
+    if (!map.current) return;
+
+    const sharkActivityData = generateSharkActivityGrid(sharkHotspots);
+
+    map.current.addSource('shark-activity', {
+      type: 'geojson',
+      data: sharkActivityData as any
+    });
+
+    map.current.addLayer({
+      id: 'shark-heatmap',
+      type: 'heatmap',
+      source: 'shark-activity',
+      paint: {
+        'heatmap-weight': ['get', 'intensity'],
+        'heatmap-intensity': 1.2,
+        'heatmap-color': [
+          'interpolate',
+          ['linear'],
+          ['heatmap-density'],
+          0, 'rgba(0, 0, 0, 0)',
+          0.01, 'rgba(173, 216, 230, 0)',
+          0.1, 'rgba(135, 206, 250, 0.35)',
+          0.2, 'rgba(100, 200, 255, 0.45)',
+          0.35, 'rgba(144, 238, 144, 0.55)',
+          0.5, 'rgba(255, 255, 153, 0.65)',
+          0.65, 'rgba(255, 204, 102, 0.75)',
+          0.8, 'rgba(255, 140, 66, 0.85)',
+          0.9, 'rgba(235, 100, 52, 0.9)',
+          1, 'rgba(200, 50, 50, 0.95)'
+        ],
+        'heatmap-radius': [
+          'interpolate',
+          ['linear'],
+          ['zoom'],
+          4, 15,
+          7, 35,
+          10, 60
+        ],
+        'heatmap-opacity': 0.75
+      }
+    });
+
+    setupSharkInteractions();
+  }
+
+  function setupSharkInteractions() {
+    if (!map.current) return;
+
+    map.current.on('click', (e) => {
+      if (!map.current) return;
+
+      const features = map.current.queryRenderedFeatures(e.point, {
+        layers: ['shark-heatmap']
+      });
+
+      if (features.length > 0) {
+        const intensity = features[0].properties?.intensity || 0;
+        const popupContent = createSharkPopupHTML(intensity);
+
+        new mapboxgl.Popup({
+          closeButton: true,
+          closeOnClick: true,
+          maxWidth: '300px'
+        })
+          .setLngLat(e.lngLat)
+          .setHTML(popupContent)
+          .addTo(map.current);
+      }
+    });
+
+    map.current.on('mouseenter', 'shark-heatmap', () => {
+      if (map.current) map.current.getCanvas().style.cursor = 'pointer';
+    });
+
+    map.current.on('mouseleave', 'shark-heatmap', () => {
+      if (map.current) map.current.getCanvas().style.cursor = '';
+    });
+  }
+
+  async function setupWindyMarkers() {
+    if (!map.current) return;
+
+    try {
+      const markers = await addWindyMarkers(map.current, GULF_SAMPLE_POINTS);
+      windyMarkers.current = markers;
+    } catch (err) {
+      console.error('❌ Fatal error in addWindyMarkers:', err);
+    }
+  }
+
+  function updateLayerVisibility() {
+    if (!map.current) return;
+
+    if (map.current.getLayer('shark-heatmap')) {
+      map.current.setLayoutProperty(
+        'shark-heatmap',
+        'visibility',
+        layersVisible.sharkActivity ? 'visible' : 'none'
+      );
+    }
+
+    if (map.current.getLayer('ocean-particle-layer')) {
+      map.current.setLayoutProperty(
+        'ocean-particle-layer',
+        'visibility',
+        layersVisible.oceanParticles ? 'visible' : 'none'
+      );
+    }
+
+    windyMarkers.current.forEach(marker => {
+      const element = marker.getElement();
+      element.style.display = layersVisible.windyData ? 'block' : 'none';
+    });
+  }
+
+  function toggleLayer(layer: keyof LayerVisibility) {
+    setLayersVisible(prev => ({
+      ...prev,
+      [layer]: !prev[layer]
+    }));
+  }
+
+  function cleanup() {
+    windyMarkers.current.forEach(marker => marker.remove());
+    windyMarkers.current = [];
+    particleSystem.current?.destroy();
+    particleSystem.current = null;
+    map.current?.remove();
+    map.current = null;
+  }
 
   if (error) {
     return <div className="p-4 bg-red-500 text-white">Map Error: {error}</div>;
@@ -219,7 +385,18 @@ export default function MapboxMap({
 
   return (
     <>
-      <div ref={mapContainer} className={className} aria-label="interactive map showing shark zones" role="region" />
+      <div
+        ref={mapContainer}
+        className={className}
+        aria-label="interactive map showing shark zones"
+        role="region"
+      />
+
+      <MapLayerControls
+        layersVisible={layersVisible}
+        onToggleLayer={toggleLayer}
+        viewport={viewport}
+      />
     </>
   );
 }
