@@ -17,21 +17,7 @@ if not config_logger.handlers:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8')
 
-    DB_USER: str
-    DB_PASSWORD: str
-    DB_HOST: str
-    DB_NAME: str
-
-    @property
-    def database_url(self) -> str:
-        """
-        Assembles the database URL, correctly URL-encoding the password.
-        """
-        # URL-encode the password to handle special characters
-        encoded_password = quote_plus(self.DB_PASSWORD)
-
-        # Assemble the full URL for SQLAlchemy
-        return f"mongodb+srv://{self.DB_USER}:{encoded_password}@{self.DB_HOST}/?retryWrites=true&w=majority&appName={self.DB_NAME}"
+    GEMINI_API_KEY: str
 
 
 def get_settings() -> Settings:
