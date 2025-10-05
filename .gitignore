@@ -28,3 +28,8 @@ htmlcov/
 
 .DS_Store
 Thumbs.db
+
+predictive_model/py_files/spaceapp
+.predictive_model/py_files/spaceapp
+
+
