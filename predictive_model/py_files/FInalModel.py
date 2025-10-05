@@ -1,12 +1,4 @@
 #!/usr/bin/env python3
-"""
-Enhanced Final Model: Shark Behavior Prediction Pipeline with Paper-Accurate MCMC
-Implements Guzman et al. (2022) specifications:
-- Four time-steps per day (tstep = 0.25)
-- 5,000 samples during adaptation and update phases
-- Thinning of 10 to minimize within-chain sample autocorrelation
-"""
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -40,8 +32,6 @@ def apply_smart_biological_constraints(df):
     Apply intelligent biological constraints that preserve data while fixing unrealistic values.
     Instead of removing data, we'll correct obvious errors and cap extreme values.
     """
-    print("Applying smart biological constraints...")
-    
     MAX_BURST_SPEED = 74 * 24  
     MAX_SUSTAINED_SPEED = 20 * 24   
     TYPICAL_MAX_SPEED = 10 * 24  
@@ -50,10 +40,6 @@ def apply_smart_biological_constraints(df):
     
     extreme_speeds = (df['speed_km_day'] > MAX_BURST_SPEED).sum()
     high_speeds = (df['speed_km_day'] > MAX_SUSTAINED_SPEED).sum()
-    
-    print(f"  Original data: {len(df)} observations")
-    print(f"  Extreme speeds (>{MAX_BURST_SPEED} km/day): {extreme_speeds} ({extreme_speeds/len(df)*100:.1f}%)")
-    print(f"  High speeds (>{MAX_SUSTAINED_SPEED} km/day): {high_speeds} ({high_speeds/len(df)*100:.1f}%)")
     
     original_max = df_fixed['speed_km_day'].max()
     df_fixed['speed_km_day'] = np.clip(df_fixed['speed_km_day'], 0, MAX_BURST_SPEED)
@@ -74,24 +60,6 @@ def apply_smart_biological_constraints(df):
     df_fixed.loc[large_steps, 'data_quality'] = 'suspicious'
     very_large_steps = df_fixed['step_length'] > 500 
     df_fixed.loc[very_large_steps, 'data_quality'] = 'poor'
-    
-    print(f"\nSmart constraint results:")
-    print(f"  Data retained: {len(df_fixed)} observations (100%)")
-    print(f"  Speed capped from {original_max:.1f} to {df_fixed['speed_km_day'].max():.1f} km/day")
-    print(f"  New speed statistics:")
-    print(f"    Mean: {df_fixed['speed_km_day'].mean():.1f} km/day")
-    print(f"    Median: {df_fixed['speed_km_day'].median():.1f} km/day")
-    print(f"    95th percentile: {df_fixed['speed_km_day'].quantile(0.95):.1f} km/day")
-    
-    print(f"\nData quality distribution:")
-    quality_counts = df_fixed['data_quality'].value_counts()
-    for quality, count in quality_counts.items():
-        print(f"    {quality}: {count} ({count/len(df_fixed)*100:.1f}%)")
-    
-    print(f"\nSpeed category distribution:")
-    speed_counts = df_fixed['speed_category'].value_counts()
-    for category, count in speed_counts.items():
-        print(f"    {category}: {count} ({count/len(df_fixed)*100:.1f}%)")
     
     return df_fixed
 
@@ -186,12 +154,7 @@ def discretize_to_time_steps(df, tstep=0.25):
     
     if len(discretized_df) > 0:
         print(f"Discretized to {len(discretized_df)} regular time-step observations")
-        print(f"Sharks with time-step data: {discretized_df['shark_id'].nunique()}")
-        print(f"Average observations per shark: {len(discretized_df) / discretized_df['shark_id'].nunique():.1f}")
     else:
-        print("Warning: No observations could be discretized to regular time steps!")
-        print("This may be due to sparse data or short tracking periods.")
-        print("Falling back to original irregular time intervals...")
         return df
     
     return discretized_df
@@ -207,11 +170,6 @@ def bayesian_hmm_mcmc(df, n_samples=5000, n_burn=1000, thin=10, n_chains=3):
     - thin: Thinning interval (paper: 10)
     - n_chains: Number of parallel chains
     """
-    print(f"Running Bayesian HMM with MCMC:")
-    print(f"  - {n_samples} samples per chain")
-    print(f"  - {n_burn} burn-in samples")
-    print(f"  - Thinning every {thin} samples")
-    print(f"  - {n_chains} parallel chains")
     
     features = ["step_length", "turning_angle", "chlor_a", "carbon_phyto", "poc", "water_depth", "eddy_speed", "sst"]
     X = df[features].fillna(df[features].median()).values
@@ -219,8 +177,6 @@ def bayesian_hmm_mcmc(df, n_samples=5000, n_burn=1000, thin=10, n_chains=3):
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    print("Fitting Bayesian Gaussian Mixture Model...")
-    
     bgm = BayesianGaussianMixture(
         n_components=2,
         covariance_type='diag',
@@ -251,19 +207,11 @@ def bayesian_hmm_mcmc(df, n_samples=5000, n_burn=1000, thin=10, n_chains=3):
     df["state_probability_0"] = state_probs[:, 0]
     df["state_probability_1"] = state_probs[:, 1]
     df["state_uncertainty"] = 1 - np.max(state_probs, axis=1) 
-    
-    print("\nMCMC-style Diagnostics:")
-    print(f"  - Effective sample size (approx): {len(df) * (1.0/thin):.0f}")
-    print(f"  - Mean state uncertainty: {df['state_uncertainty'].mean():.3f}")
-    print(f"  - High uncertainty observations (>0.4): {(df['state_uncertainty'] > 0.4).sum()}")
-    
     return df, bgm, scaler
 
 
 def enhanced_train_hmm(df):
     """Enhanced HMM training with paper specifications and smart biological constraints."""
-    print("Enhanced HMM Training with Paper Specifications")
-    print("=" * 55)
 
     df_constrained = apply_smart_biological_constraints(df)
     
@@ -332,30 +280,23 @@ def enhanced_train_hmm(df):
 
 def visualize_behavior(df):
     """Generate enhanced spatial map visualization with uncertainty."""
-    print("Creating enhanced spatial map visualization with MCMC uncertainty...")
     plt.figure(figsize=(15, 8))
     colors = {"Foraging": "#2E8B57", "Migrating": "#FF6B35"}
-
-    # Create subplots: main map + uncertainty plot
     plt.subplot(1, 1, 1)
     
-    # Main spatial distribution with uncertainty-based alpha
-    # Plot migrating first (background layer)
     migrating_subset = df[df["behavior"] == "Migrating"]
     if len(migrating_subset) > 0:
         plt.scatter(migrating_subset["longitude"], migrating_subset["latitude"], 
-                   s=25, c=colors["Migrating"], alpha=0.5,  # Lower alpha for background
+                   s=25, c=colors["Migrating"], alpha=0.5,  
                    label=f"Migrating (n={len(migrating_subset)})",
                    edgecolors='white', linewidth=0.3)
     
-    # Plot foraging on top (foreground layer) - more visible
     foraging_subset = df[df["behavior"] == "Foraging"]
     if len(foraging_subset) > 0:
         plt.scatter(foraging_subset["longitude"], foraging_subset["latitude"], 
-                   s=35, c=colors["Foraging"], alpha=0.8,  # Higher alpha and larger size
+                   s=35, c=colors["Foraging"], alpha=0.8,  
                    label=f"Foraging (n={len(foraging_subset)})",
-                   edgecolors='black', linewidth=0.5, marker='o')  # Black edges for visibility
-    
+                   edgecolors='black', linewidth=0.5, marker='o')  
     plt.xlabel("Longitude (°)")
     plt.ylabel("Latitude (°)")
     plt.title("Enhanced Shark Behavioral States\n(MCMC-based with 6-hour time steps)")
@@ -363,48 +304,17 @@ def visualize_behavior(df):
     plt.grid(True, alpha=0.3)
     plt.gca().set_facecolor('#f0f8ff')
     
-    # Optimize axis limits
     if len(df) > 0:
         lon_margin = (df['longitude'].max() - df['longitude'].min()) * 0.05
         lat_margin = (df['latitude'].max() - df['latitude'].min()) * 0.05
         plt.xlim(df['longitude'].min() - lon_margin, df['longitude'].max() + lon_margin)
         plt.ylim(df['latitude'].min() - lat_margin, df['latitude'].max() + lat_margin)
     
-    # Uncertainty visualization
     
     plt.tight_layout()
     plt.savefig("enhanced_shark_behavior_mcmc_map.png", dpi=300, bbox_inches='tight')
     plt.show()
     
-    # Enhanced summary with MCMC diagnostics
-    print("\nENHANCED MCMC-BASED ANALYSIS SUMMARY:")
-    print("=" * 60)
-    for behavior in ["Foraging", "Migrating"]:
-        subset = df[df["behavior"] == behavior]
-        if len(subset) > 0:
-            print(f"\n{behavior} Areas (n={len(subset)}):")
-            print(f"  Chlorophyll-a: {subset['chlor_a'].mean():.3f} ± {subset['chlor_a'].std():.3f}")
-            print(f"  Carbon Phyto: {subset['carbon_phyto'].mean():.1f} ± {subset['carbon_phyto'].std():.1f}")
-            print(f"  POC: {subset['poc'].mean():.1f} ± {subset['poc'].std():.1f}")
-            print(f"  Speed: {subset['speed_km_day'].mean():.1f} ± {subset['speed_km_day'].std():.1f} km/day")
-            if 'state_uncertainty' in subset.columns:
-                print(f"  MCMC Uncertainty: {subset['state_uncertainty'].mean():.3f} ± {subset['state_uncertainty'].std():.3f}")
-    
-    # Time-step analysis
-    if 'time_step' in df.columns:
-        print(f"\nTemporal Analysis:")
-        print(f"  Total time steps: {df['time_step'].max()}")
-        print(f"  Time step interval: 6 hours (0.25 days)")
-        print(f"  Average time steps per shark: {df.groupby('shark_id')['time_step'].max().mean():.1f}")
-    
-    print("\nMCMC Implementation Features:")
-    print("  ✓ Regular 6-hour time steps (tstep = 0.25)")
-    print("  ✓ Bayesian uncertainty quantification")
-    print("  ✓ Thinning-like sampling for autocorrelation reduction")
-    print("  ✓ Multiple chain initialization")
-    print("  ✓ Burn-in period implementation")
-    
-    # Print summary statistics
     print("\nENVIRONMENTAL ANALYSIS SUMMARY:")
     print("=" * 50)
     for behavior in ["Foraging", "Migrating"]:
@@ -417,21 +327,17 @@ def visualize_behavior(df):
 
 
 def main():
-    print("ENHANCED SHARK BEHAVIOR PREDICTION PIPELINE")
-    print("Implementing Guzman et al. (2022) MCMC Specifications")
+    print(" SHARK BEHAVIOR PREDICTION PIPELINE")
     print("=" * 65)
     
     try:
-        # Load preprocessed data
         df = load_preprocessed_data()
         
         if df is None:
             return None
         
-        # Enhanced HMM training with paper specifications
         df_enhanced = enhanced_train_hmm(df)
         
-        # Create enhanced visualizations
         visualize_behavior(df_enhanced)
         
         return df_enhanced
