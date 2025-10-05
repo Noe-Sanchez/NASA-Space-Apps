@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Export Foraging Areas to CSV
-Converts HMM analysis results to CSV format for easy plotting of shark foraging locations.
+Converts HMM analysis results to CSV format
+
 """
 
 import pandas as pd
@@ -21,8 +22,6 @@ def export_foraging_areas_csv(df_enhanced, output_filename="shark_foraging_areas
     Returns:
     - Path to the created CSV file
     """
-    print(f"Exporting foraging areas to {output_filename}...")
-    
     # Create a clean export DataFrame with essential columns for plotting
     export_df = df_enhanced[[
         'shark_id', 
@@ -40,7 +39,8 @@ def export_foraging_areas_csv(df_enhanced, output_filename="shark_foraging_areas
         'carbon_phyto',
         'poc',
         'sst',
-        'water_depth'
+        'water_depth',
+        'eddy_speed'
     ]].copy()
     
     # Add derived columns for easier analysis
@@ -65,27 +65,12 @@ def export_foraging_areas_csv(df_enhanced, output_filename="shark_foraging_areas
     export_df['step_length'] = export_df['step_length'].round(3)
     export_df['confidence'] = export_df['confidence'].round(3)
     export_df['state_uncertainty'] = export_df['state_uncertainty'].round(3)
+    export_df['eddy_speed'] = export_df['eddy_speed'].round(4)
     
     # Save to CSV
     export_df.to_csv(output_filename, index=False)
     
-    # Print summary statistics
-    print(f"\nExport Summary:")
-    print(f"  Total observations: {len(export_df)}")
-    print(f"  Unique sharks: {export_df['shark_id'].nunique()}")
-    print(f"  Foraging observations: {export_df['is_foraging'].sum()} ({export_df['is_foraging'].mean()*100:.1f}%)")
-    print(f"  Migrating observations: {export_df['is_migrating'].sum()} ({export_df['is_migrating'].mean()*100:.1f}%)")
-    print(f"  High confidence observations: {export_df['high_confidence'].sum()} ({export_df['high_confidence'].mean()*100:.1f}%)")
-    
-    print(f"\nForaging Areas Summary:")
-    foraging_data = export_df[export_df['is_foraging'] == 1]
-    if len(foraging_data) > 0:
-        print(f"  Latitude range: {foraging_data['latitude'].min():.3f} to {foraging_data['latitude'].max():.3f}")
-        print(f"  Longitude range: {foraging_data['longitude'].min():.3f} to {foraging_data['longitude'].max():.3f}")
-        print(f"  Average chlorophyll-a: {foraging_data['chlor_a'].mean():.4f}")
-        print(f"  Average carbon phyto: {foraging_data['carbon_phyto'].mean():.2f}")
-        print(f"  Average speed: {foraging_data['speed_km_day'].mean():.2f} km/day")
-        print(f"  Average confidence: {foraging_data['confidence'].mean():.3f}")
+    print(f"Exported {len(export_df)} observations to {output_filename}")
     
     return output_filename
 
@@ -96,8 +81,6 @@ def create_foraging_summary_csv(df_enhanced, output_filename="foraging_areas_sum
     
     This creates a simplified dataset perfect for mapping hotspots.
     """
-    print(f"Creating foraging summary for {output_filename}...")
-    
     # Filter for foraging behavior only
     foraging_df = df_enhanced[df_enhanced['behavior'] == 'Foraging'].copy()
     
@@ -119,14 +102,15 @@ def create_foraging_summary_csv(df_enhanced, output_filename="foraging_areas_sum
         'carbon_phyto': 'mean', # Average carbon
         'poc': 'mean',          # Average POC
         'sst': 'mean',          # Average SST
-        'water_depth': 'mean'   # Average depth
+        'water_depth': 'mean',  # Average depth
+        'eddy_speed': 'mean'    # Average eddy speed
     }).reset_index()
     
     # Rename columns for clarity
     summary_df.columns = [
         'latitude', 'longitude', 'unique_sharks', 'foraging_observations',
         'avg_uncertainty', 'avg_speed_km_day', 'avg_chlor_a', 'avg_carbon_phyto',
-        'avg_poc', 'avg_sst', 'avg_water_depth'
+        'avg_poc', 'avg_sst', 'avg_water_depth', 'avg_eddy_speed'
     ]
     
     # Add derived metrics
@@ -145,6 +129,7 @@ def create_foraging_summary_csv(df_enhanced, output_filename="foraging_areas_sum
     summary_df['avg_poc'] = summary_df['avg_poc'].round(2)
     summary_df['avg_sst'] = summary_df['avg_sst'].round(2)
     summary_df['avg_water_depth'] = summary_df['avg_water_depth'].round(1)
+    summary_df['avg_eddy_speed'] = summary_df['avg_eddy_speed'].round(4)
     summary_df['foraging_intensity'] = summary_df['foraging_intensity'].round(2)
     summary_df['shark_diversity'] = summary_df['shark_diversity'].round(3)
     
@@ -154,12 +139,7 @@ def create_foraging_summary_csv(df_enhanced, output_filename="foraging_areas_sum
     # Save to CSV
     summary_df.to_csv(output_filename, index=False)
     
-    print(f"\nForaging Summary Export:")
-    print(f"  Foraging hotspots identified: {len(summary_df)}")
-    print(f"  Top hotspot: ({summary_df.iloc[0]['latitude']:.3f}, {summary_df.iloc[0]['longitude']:.3f})")
-    print(f"    - {summary_df.iloc[0]['foraging_observations']} observations")
-    print(f"    - {summary_df.iloc[0]['unique_sharks']} sharks")
-    print(f"    - Intensity: {summary_df.iloc[0]['foraging_intensity']:.2f}")
+    print(f"Created {len(summary_df)} foraging hotspots in {output_filename}")
     
     return output_filename
 
@@ -168,12 +148,8 @@ def generate_plotting_csvs():
     """
     Main function to generate CSV files for plotting foraging areas.
     """
-    print("GENERATING FORAGING AREA CSV FILES")
-    print("=" * 50)
-    
     try:
         # Load preprocessed data
-        print("Loading preprocessed data...")
         df = load_preprocessed_data()
         
         if df is None:
@@ -182,7 +158,6 @@ def generate_plotting_csvs():
             return None
         
         # Run HMM analysis
-        print("Running HMM analysis...")
         df_enhanced = enhanced_train_hmm(df)
         
         # Export detailed results
@@ -191,15 +166,7 @@ def generate_plotting_csvs():
         # Export summary for hotspot mapping
         summary_file = create_foraging_summary_csv(df_enhanced, "shark_foraging_hotspots.csv")
         
-        print(f"\n" + "=" * 50)
-        print("CSV FILES CREATED FOR PLOTTING:")
-        print(f"1. {detailed_file} - Complete dataset with all observations")
-        print(f"2. {summary_file} - Aggregated foraging hotspots")
-        print("\nRECOMMENDED PLOTTING APPROACHES:")
-        print("For individual tracks: Use detailed CSV, plot by shark_id")
-        print("For hotspot mapping: Use hotspots CSV, plot foraging_intensity")
-        print("For behavior comparison: Filter detailed CSV by 'behavior' column")
-        print("For high-confidence areas: Filter by 'high_confidence' == 1")
+        print(f"CSV files created: {detailed_file}, {summary_file}")
         
         return detailed_file, summary_file
         
@@ -210,73 +177,11 @@ def generate_plotting_csvs():
         return None
 
 
-def create_plotting_examples():
-    """
-    Generate example plotting code snippets to help with visualization.
-    """
-    example_code = '''
-# EXAMPLE PLOTTING CODE FOR GENERATED CSV FILES
-
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-# 1. Load the detailed foraging data
-df = pd.read_csv("shark_foraging_areas_detailed.csv")
-
-# 2. Basic foraging vs migrating plot
-plt.figure(figsize=(12, 8))
-foraging = df[df['is_foraging'] == 1]
-migrating = df[df['is_migrating'] == 1]
-
-plt.scatter(migrating['longitude'], migrating['latitude'], 
-           c='orange', alpha=0.6, s=20, label='Migrating')
-plt.scatter(foraging['longitude'], foraging['latitude'], 
-           c='green', alpha=0.8, s=30, label='Foraging')
-plt.xlabel('Longitude')
-plt.ylabel('Latitude')
-plt.title('Shark Behavior: Foraging vs Migrating Areas')
-plt.legend()
-plt.show()
-
-# 3. High-confidence foraging areas only
-high_conf_foraging = df[(df['is_foraging'] == 1) & (df['high_confidence'] == 1)]
-plt.figure(figsize=(10, 8))
-scatter = plt.scatter(high_conf_foraging['longitude'], 
-                     high_conf_foraging['latitude'],
-                     c=high_conf_foraging['chlor_a'], 
-                     s=50, alpha=0.7, cmap='viridis')
-plt.colorbar(scatter, label='Chlorophyll-a')
-plt.title('High-Confidence Foraging Areas by Chlorophyll Concentration')
-plt.show()
-
-# 4. Load and plot foraging hotspots
-hotspots = pd.read_csv("shark_foraging_hotspots.csv")
-plt.figure(figsize=(12, 8))
-scatter = plt.scatter(hotspots['longitude'], hotspots['latitude'],
-                     s=hotspots['foraging_intensity']*10,
-                     c=hotspots['unique_sharks'], 
-                     alpha=0.7, cmap='Reds')
-plt.colorbar(scatter, label='Number of Sharks')
-plt.xlabel('Longitude')
-plt.ylabel('Latitude')
-plt.title('Foraging Hotspots (Size = Intensity, Color = Shark Count)')
-plt.show()
-'''
-    
-    with open("plotting_examples.py", "w") as f:
-        f.write(example_code)
-    
-    print("\nCreated 'plotting_examples.py' with sample visualization code!")
-
 
 if __name__ == "__main__":
-    # Generate the CSV files
     result = generate_plotting_csvs()
     
     if result:
-        # Create example plotting code
-        create_plotting_examples()
-        print("\nReady for plotting! Check the generated CSV files and plotting examples.")
+        print("Generated CSV files.")
     else:
         print("Failed to generate CSV files. Please check your data and try again.")

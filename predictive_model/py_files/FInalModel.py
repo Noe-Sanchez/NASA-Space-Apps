@@ -26,14 +26,10 @@ def load_preprocessed_data(filename="preprocessed_shark_pace_data.csv"):
         print("Please run 'python preprocess_data.py' first to generate the data.")
         return None
     
-    print(f"Loading preprocessed data from {filename}...")
     df = pd.read_csv(filename)
     df["datetime"] = pd.to_datetime(df["datetime"])
     df["pace_date"] = pd.to_datetime(df["pace_date"])
     df["original_datetime"] = pd.to_datetime(df["original_datetime"])
-    
-    print(f"Loaded {len(df)} observations for {df['shark_id'].nunique()} sharks")
-    print(f"Date range: {df['datetime'].min().date()} to {df['datetime'].max().date()}")
     
     return df
 
