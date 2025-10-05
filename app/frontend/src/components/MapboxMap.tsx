@@ -7,6 +7,7 @@ import { fetchOceanCurrentField } from '@/lib/windyApi';
 import { DEFAULT_SHARK_HOTSPOTS, generateSharkActivityGrid, type SharkHotspot } from '@/lib/sharkData';
 import { addWindyMarkers, GULF_SAMPLE_POINTS } from '@/lib/mapHelpers';
 import { createSharkPopupHTML } from '@/lib/sharkPopup';
+import { getOceanLandGeoJSON } from '@/lib/earthData';
 import { MapLayerControls, type LayerVisibility } from './MapLayerControls';
 
 export interface Viewport {
@@ -50,7 +51,8 @@ export default function MapboxMap({
   const [layersVisible, setLayersVisible] = useState<LayerVisibility>({
     sharkActivity: true,
     oceanParticles: true,
-    windyData: true
+    windyData: true,
+    oceanLand: false
   });
   const [viewport, setViewport] = useState<Viewport>({
     center: { lng, lat },
@@ -155,7 +157,8 @@ export default function MapboxMap({
     await Promise.all([
       setupOceanParticles(mapBounds),
       setupSharkHeatmap(),
-      setupWindyMarkers()
+      setupWindyMarkers(),
+      setupOceanLandLayer(mapBounds)
     ]);
   }
 
@@ -338,6 +341,113 @@ export default function MapboxMap({
     }
   }
 
+  async function setupOceanLandLayer(mapBounds: mapboxgl.LngLatBounds) {
+    if (!map.current) return;
+
+    const bounds = {
+      north: mapBounds.getNorth(),
+      south: mapBounds.getSouth(),
+      east: mapBounds.getEast(),
+      west: mapBounds.getWest()
+    };
+
+    // Generate ocean/land classification data
+    const oceanLandData = getOceanLandGeoJSON(bounds);
+    console.log('Ocean/Land data generated:', oceanLandData.features.length, 'points');
+
+    // Add source
+    map.current.addSource('ocean-land-data', {
+      type: 'geojson',
+      data: oceanLandData as any
+    });
+
+    // Add ocean points layer (blue)
+    map.current.addLayer({
+      id: 'ocean-layer',
+      type: 'circle',
+      source: 'ocean-land-data',
+      filter: ['==', ['get', 'type'], 'ocean'],
+      paint: {
+        'circle-radius': 4,
+        'circle-color': '#0077be',
+        'circle-opacity': 0.6
+      }
+    });
+
+    // Add land points layer (green)
+    map.current.addLayer({
+      id: 'land-layer',
+      type: 'circle',
+      source: 'ocean-land-data',
+      filter: ['==', ['get', 'type'], 'land'],
+      paint: {
+        'circle-radius': 4,
+        'circle-color': '#2d5016',
+        'circle-opacity': 0.6
+      }
+    });
+
+    // Add click handlers for ocean/land points
+    setupOceanLandInteractions();
+  }
+
+  function setupOceanLandInteractions() {
+    if (!map.current) return;
+
+    map.current.on('click', 'ocean-layer', (e) => {
+      if (!map.current || !e.features?.[0]) return;
+
+      const coordinates = (e.features[0].geometry as any).coordinates.slice();
+      const type = e.features[0].properties?.type;
+
+      new mapboxgl.Popup()
+        .setLngLat(coordinates)
+        .setHTML(`
+          <div class="p-2">
+            <h3 class="font-bold text-blue-600">🌊 Ocean</h3>
+            <p class="text-sm">Type: ${type}</p>
+            <p class="text-xs text-gray-600">Lat: ${coordinates[1].toFixed(4)}, Lng: ${coordinates[0].toFixed(4)}</p>
+          </div>
+        `)
+        .addTo(map.current);
+    });
+
+    map.current.on('click', 'land-layer', (e) => {
+      if (!map.current || !e.features?.[0]) return;
+
+      const coordinates = (e.features[0].geometry as any).coordinates.slice();
+      const type = e.features[0].properties?.type;
+
+      new mapboxgl.Popup()
+        .setLngLat(coordinates)
+        .setHTML(`
+          <div class="p-2">
+            <h3 class="font-bold text-green-700">🌍 Land</h3>
+            <p class="text-sm">Type: ${type}</p>
+            <p class="text-xs text-gray-600">Lat: ${coordinates[1].toFixed(4)}, Lng: ${coordinates[0].toFixed(4)}</p>
+          </div>
+        `)
+        .addTo(map.current);
+    });
+
+    // Change cursor on hover
+    map.current.on('mouseenter', 'ocean-layer', () => {
+      if (map.current) map.current.getCanvas().style.cursor = 'pointer';
+    });
+
+    map.current.on('mouseleave', 'ocean-layer', () => {
+      if (map.current) map.current.getCanvas().style.cursor = '';
+    });
+
+    map.current.on('mouseenter', 'land-layer', () => {
+      if (map.current) map.current.getCanvas().style.cursor = 'pointer';
+    });
+
+    map.current.on('mouseleave', 'land-layer', () => {
+      if (map.current) map.current.getCanvas().style.cursor = '';
+    });
+  }
+
   function updateLayerVisibility() {
     if (!map.current) return;
 
@@ -354,6 +464,22 @@ export default function MapboxMap({
         'ocean-particle-layer',
         'visibility',
         layersVisible.oceanParticles ? 'visible' : 'none'
+      );
+    }
+
+    if (map.current.getLayer('ocean-layer')) {
+      map.current.setLayoutProperty(
+        'ocean-layer',
+        'visibility',
+        layersVisible.oceanLand ? 'visible' : 'none'
+      );
+    }
+
+    if (map.current.getLayer('land-layer')) {
+      map.current.setLayoutProperty(
+        'land-layer',
+        'visibility',
+        layersVisible.oceanLand ? 'visible' : 'none'
       );
     }
 

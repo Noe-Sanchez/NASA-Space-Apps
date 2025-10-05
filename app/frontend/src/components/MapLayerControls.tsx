@@ -4,6 +4,7 @@ export interface LayerVisibility {
   sharkActivity: boolean;
   oceanParticles: boolean;
   windyData: boolean;
+  oceanLand: boolean;
 }
 
 interface MapLayerControlsProps {
@@ -41,6 +42,12 @@ export const MapLayerControls = memo(function MapLayerControls({
           checked={layersVisible.windyData}
           onChange={() => onToggleLayer('windyData')}
           label="🌊 Wave Data (Windy)"
+        />
+
+        <LayerToggle
+          checked={layersVisible.oceanLand}
+          onChange={() => onToggleLayer('oceanLand')}
+          label="🌍 Ocean/Land Classification"
         />
       </div>
 
