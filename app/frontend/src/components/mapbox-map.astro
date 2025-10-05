@@ -1,0 +1,42 @@
+---
+const {
+  lat = 25.6866,
+  lng = -100.3161,
+  zoom = 11,
+  styleUrl = 'mapbox://styles/mapbox/streets-v12',
+  className = 'map h-[480px] w-full rounded-2xl'
+} = Astro.props;
+---
+
+<div id="map" class={className} aria-label="interactive map" role="region"></div>
+
+<style>
+  /* Fallback if you don’t tailwind */
+  .map { height: 480px; width: 100%; border-radius: 1rem; }
+</style>
+
+<!-- Client script (bundled to the browser) -->
+<script type="module" define:vars={{ lat, lng, zoom, styleUrl }}>
+  import mapboxgl from 'mapbox-gl';
+  import 'mapbox-gl/dist/mapbox-gl.css';
+
+  mapboxgl.accessToken = import.meta.env.PUBLIC_MAPBOX_TOKEN;
+
+  const map = new mapboxgl.Map({
+    container: 'map',
+    style: styleUrl,
+    center: [lng, lat],
+    zoom: zoom,
+    attributionControl: true
+  });
+
+  map.addControl(new mapboxgl.NavigationControl(), 'top-right');
+  map.addControl(new mapboxgl.FullscreenControl(), 'top-right');
+  map.addControl(new mapboxgl.ScaleControl({ unit: 'metric' }), 'bottom-left');
+
+  const popup = new mapboxgl.Popup({ offset: 16 }).setText('Hello from pure Astro!');
+  new mapboxgl.Marker({ color: '#1d4ed8' })
+    .setLngLat([lng, lat])
+    .setPopup(popup)
+    .addTo(map);
+</script>

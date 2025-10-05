@@ -5,6 +5,9 @@ import Button from '../components/Button.astro';
 
 // Full Astro Component Syntax:
 // https://docs.astro.build/basics/astro-components/
+import Layout from '../layouts/layout.astro';
+import Sidebar from '../components/sidebar.astro';
+import MapboxMap from '../components/MapboxMap';
 ---
 
 <html lang="en">
@@ -17,9 +20,13 @@ import Button from '../components/Button.astro';
 	</head>
 
 	<body>
-		<div class="grid place-items-center h-screen content-center">
-			<Button>Tailwind Button in Astro!</Button>
-			<a href="/markdown-page" class="p-4 underline">Markdown is also supported...</a>
-		</div>
+		<Layout title="outletbuddy">
+  <div class="flex h-screen bg-zinc-900">
+    <Sidebar />
+    <div id="map-container" class="flex-1 bg-zinc-800">
+      <MapboxMap client:load />
+    </div>
+  </div>
+</Layout>
 	</body>
 </html>
