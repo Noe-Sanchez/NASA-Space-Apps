@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     DB_HOST: str
     DB_NAME: str
 
+    MODEL_SERVER: str
+
+    GEMINI_API_KEY: str
+
     @property
     def database_url(self) -> str:
         """
