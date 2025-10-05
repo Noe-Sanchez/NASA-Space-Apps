@@ -4,10 +4,7 @@ import "mapbox-gl/dist/mapbox-gl.css";
 
 import { OceanParticles } from "@/lib/OceanParticles";
 import { fetchOceanCurrentField } from "@/lib/windyApi";
-import {
-  type SharkHotspot,
-  SAMPLE_SHARK_PATH, // Import shark path data
-} from "@/lib/sharkData";
+import { type SharkActivityData, type SharkHotspot } from "@/lib/sharkData";
 import { addWindyMarkers, GULF_SAMPLE_POINTS } from "@/lib/mapHelpers";
 import { createSharkPopupHTML } from "@/lib/sharkPopup";
 import { getOceanLandGeoJSON } from "@/lib/earthData";
@@ -95,10 +92,12 @@ export interface ExtendedLayerVisibility extends LayerVisibility {
   [key: string]: boolean;
 }
 
+export type SharkActivityCategory = "All" | "Migrating" | "Foraging";
+
 export default function MapboxMap({
-  lat = 25.9,
-  lng = -97.0,
-  zoom = 7,
+  lat = -34.5,
+  lng = 22.0,
+  zoom = 5,
   styleUrl = "mapbox://styles/mapbox/light-v11",
   className = "map h-full w-full",
   onViewportChange,
@@ -107,16 +106,19 @@ export default function MapboxMap({
   const map = useRef<mapboxgl.Map | null>(null);
   const particleSystem = useRef<OceanParticles | null>(null);
   const windyMarkers = useRef<mapboxgl.Marker[]>([]);
+  const mapLoaded = useRef(false);
 
+  const [sharkData, setSharkData] = useState<SharkActivityData[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [activityFilter, setActivityFilter] =
+    useState<SharkActivityCategory>("All");
 
   // Initialize with GIBS layers included
   const [layersVisible, setLayersVisible] = useState<ExtendedLayerVisibility>({
     sharkActivity: false,
-    sharkPaths: true, // Controls the lines
-    sharkPoints: true, // Controls the points
-    // GIBS layers
-    "nasa-sst": true,
+    sharkPaths: true,
+    sharkPoints: true,
+    "nasa-sst": false,
     "nasa-chlorophyll": false,
   });
 
@@ -128,12 +130,60 @@ export default function MapboxMap({
     pitch: 0,
   });
 
+  // Fetch shark data
+  useEffect(() => {
+    async function fetchSharkData() {
+      try {
+        console.log("🔄 Fetching shark data from API...");
+        const response = await fetch("http://localhost:8000/sharks");
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+        console.log("📦 RAW API DATA RECEIVED:", data);
+
+        const transformedData: SharkActivityData[] = Object.entries(
+          data.sharks
+        ).map(([sharkId, pings]) => {
+          return {
+            id: sharkId,
+            location: (pings as any[]).map((ping: any) => ({
+              type: "Feature",
+              geometry: ping.location,
+              properties: {
+                ...ping,
+              },
+            })),
+          };
+        });
+
+        console.log("✨ TRANSFORMED SHARK DATA:", transformedData);
+        setSharkData(transformedData);
+      } catch (e) {
+        console.error("❌ FAILED TO FETCH SHARK DATA:", e);
+        setError(e instanceof Error ? e.message : "Failed to load shark data.");
+      }
+    }
+
+    fetchSharkData();
+  }, []);
+
   useEffect(() => {
     if (!mapContainer.current || map.current) return;
 
     initializeMap();
 
-    return cleanup;
+    return () => {
+      if (map.current) {
+        map.current.remove();
+        map.current = null;
+      }
+      windyMarkers.current.forEach((marker) => marker.remove());
+      windyMarkers.current = [];
+      particleSystem.current?.destroy();
+      particleSystem.current = null;
+      mapLoaded.current = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -141,14 +191,87 @@ export default function MapboxMap({
     updateLayerVisibility();
   }, [layersVisible]);
 
+  // Update layers when activity filter changes
+  useEffect(() => {
+    if (!map.current || !mapLoaded.current || sharkData.length === 0) return;
+
+    console.log("🔄 Activity filter changed to:", activityFilter);
+
+    // Remove existing shark layers
+    removeSharkLayers();
+
+    // Re-add with filtered data
+    setupSharkHeatmap();
+    setupSharkPaths();
+  }, [activityFilter]);
+
+  // Setup shark layers when data arrives
+  useEffect(() => {
+    if (!map.current || sharkData.length === 0 || !mapLoaded.current) {
+      console.log("⏳ Waiting for conditions:", {
+        hasMap: !!map.current,
+        dataLength: sharkData.length,
+        mapLoaded: mapLoaded.current,
+      });
+      return;
+    }
+
+    console.log("✅ All conditions met, setting up shark layers...");
+    setupSharkHeatmap();
+    setupSharkPaths();
+  }, [sharkData, mapLoaded.current]);
+
+  // Helper function to filter shark data by activity
+  function getFilteredSharkData(): SharkActivityData[] {
+    if (activityFilter === "All") {
+      return sharkData;
+    }
+
+    return sharkData
+      .map((shark) => ({
+        ...shark,
+        location: shark.location.filter(
+          (point) => point.properties.doing === activityFilter
+        ),
+      }))
+      .filter((shark) => shark.location.length > 0); // Remove sharks with no matching points
+  }
+
+  // Helper function to remove all shark layers
+  function removeSharkLayers() {
+    if (!map.current) return;
+
+    sharkData.forEach((shark) => {
+      const pathLineLayerId = `shark-path-line-${shark.id}`;
+      const pathPointsLayerId = `shark-path-points-${shark.id}`;
+      const pathSourceId = `shark-path-source-${shark.id}`;
+
+      if (map.current!.getLayer(pathLineLayerId)) {
+        map.current!.removeLayer(pathLineLayerId);
+      }
+      if (map.current!.getLayer(pathPointsLayerId)) {
+        map.current!.removeLayer(pathPointsLayerId);
+      }
+      if (map.current!.getSource(pathSourceId)) {
+        map.current!.removeSource(pathSourceId);
+      }
+    });
+
+    // Remove heatmap
+    if (map.current.getLayer("shark-heatmap")) {
+      map.current.removeLayer("shark-heatmap");
+    }
+    if (map.current.getSource("shark-activity")) {
+      map.current.removeSource("shark-activity");
+    }
+  }
+
   function initializeMap() {
     const token = import.meta.env.PUBLIC_MAPBOX_TOKEN;
 
     if (!token) {
       setError("Missing PUBLIC_MAPBOX_TOKEN");
-      console.error(
-        "Mapbox token is missing. Please add PUBLIC_MAPBOX_TOKEN to your .env file"
-      );
+      console.error("Mapbox token is missing");
       return;
     }
 
@@ -162,7 +285,7 @@ export default function MapboxMap({
         zoom: zoom,
         projection: "mercator",
         attributionControl: true,
-        maxZoom: 6.99,
+        maxZoom: 22,
       });
 
       addMapControls();
@@ -224,28 +347,25 @@ export default function MapboxMap({
   async function handleMapLoad() {
     if (!map.current) return;
 
-    const mapBounds = map.current.getBounds();
-    if (!mapBounds) return;
+    console.log("🗺️ Map finished loading");
+    mapLoaded.current = true;
 
-    // Add all GIBS layers
     await setupAllGIBSLayers();
 
-    await Promise.all([
-      //setupOceanParticles(mapBounds),
-      setupSharkHeatmap(),
-      setupSharkPaths(), // Add function call to setup paths
-      //setupWindyMarkers(),
-      //setupOceanLandLayer(mapBounds),
-    ]);
+    if (sharkData.length > 0) {
+      console.log(
+        "🦈 Shark data already loaded, setting up layers immediately"
+      );
+      setupSharkHeatmap();
+      setupSharkPaths();
+    }
   }
 
-  // ============= DYNAMIC GIBS LAYER SETUP =============
   async function setupAllGIBSLayers() {
     if (!map.current) return;
 
     console.log("🌊 Setting up NASA GIBS layers...");
 
-    // Add each GIBS layer
     for (const [key, config] of Object.entries(GIBS_LAYERS)) {
       await addGIBSLayer(config);
     }
@@ -259,17 +379,14 @@ export default function MapboxMap({
     console.log(`🔍 Adding layer: ${config.name}`);
 
     try {
-      // Check if layer already exists
       if (map.current.getSource(config.id)) {
         console.log(`⚠️ Layer ${config.id} already exists, skipping`);
         return;
       }
 
-      // Build tile URL based on projection type
       let tileUrl: string;
 
       if (config.epsgProjection === "epsg4326") {
-        // Use WMTS query parameter style for EPSG:4326 layers
         const timeParam = `TIME=${config.dateString}T00:00:00Z`;
         const params = [
           timeParam,
@@ -285,16 +402,11 @@ export default function MapboxMap({
           `TileRow={y}`,
         ].join("&");
 
-        // Use gibs-b for EPSG:4326 OSCAR layers
         tileUrl = `https://gibs-b.earthdata.nasa.gov/wmts/${config.epsgProjection}/best/wmts.cgi?${params}`;
       } else {
-        // Use REST-style path for Web Mercator (EPSG:3857) layers
         tileUrl = `https://gibs-b.earthdata.nasa.gov/wmts/${config.epsgProjection}/best/${config.identifier}/default/${config.dateString}/${config.tileMatrixSet}${config.maxLevel}/{z}/{y}/{x}.${config.extension}`;
       }
 
-      console.log(`   Tile URL: ${tileUrl}`);
-
-      // Add source with proper tile URL template
       map.current.addSource(config.id, {
         type: "raster",
         tiles: [tileUrl],
@@ -305,7 +417,6 @@ export default function MapboxMap({
         maxzoom: config.maxLevel,
       });
 
-      // Add layer
       map.current.addLayer({
         id: config.id,
         type: "raster",
@@ -315,57 +426,58 @@ export default function MapboxMap({
           "raster-fade-duration": 300,
         },
         minzoom: 0,
-        maxzoom: 22, // Allow Mapbox to oversample for higher zoom levels
+        maxzoom: 22,
         layout: {
           visibility: layersVisible[config.id] ? "visible" : "none",
         },
       });
 
-      console.log(`✅ Added: ${config.name} (maxLevel: ${config.maxLevel})`);
-
-      // Error handling for this specific layer
-      map.current.on("error", (e: any) => {
-        if (e.sourceId === config.id) {
-          console.error(`❌ ${config.name} tile error:`, e);
-          console.error(`   URL was: ${tileUrl}`);
-        }
-      });
+      console.log(`✅ Added: ${config.name}`);
     } catch (err) {
       console.error(`❌ Error adding ${config.name}:`, err);
     }
   }
 
-  // ============= SHARK PATHS SETUP =============
   function setupSharkPaths() {
     if (!map.current) return;
 
-    SAMPLE_SHARK_PATH.forEach((shark, sharkIndex) => {
+    const filteredData = getFilteredSharkData();
+    if (filteredData.length === 0) {
+      console.log("⚠️ No shark data matches current filter");
+      return;
+    }
+
+    console.log(
+      "🦈 Setting up shark paths for",
+      filteredData.length,
+      "sharks with filter:",
+      activityFilter
+    );
+
+    filteredData.forEach((shark, sharkIndex) => {
       const pathSourceId = `shark-path-source-${shark.id}`;
       const pathLineLayerId = `shark-path-line-${shark.id}`;
       const pathPointsLayerId = `shark-path-points-${shark.id}`;
 
-      // Assign a color from the palette based on the shark's index
       const color =
         SHARK_COLOR_PALETTE[sharkIndex % SHARK_COLOR_PALETTE.length];
 
-      // 1. Create GeoJSON data from the shark's location history
       const lineCoordinates = shark.location.map((p) => p.geometry.coordinates);
 
-      const pointFeatures = shark.location.map((p, index) => ({
-        ...p,
-        properties: {
-          ...p, // Keep original properties like 'doing'
-          sharkName: shark.name,
-          sharkSpecies: shark.species,
-          point_index: index, // Add index for styling
-          is_latest: index === shark.location.length - 1,
-        },
-      }));
+      const pointFeatures = shark.location.map((feature, index) => {
+        return {
+          ...feature,
+          properties: {
+            ...feature.properties,
+            point_index: index,
+            is_latest: index === shark.location.length - 1,
+          },
+        };
+      });
 
       const geojsonData = {
         type: "FeatureCollection",
         features: [
-          // Line feature for the path
           {
             type: "Feature",
             properties: {},
@@ -374,72 +486,94 @@ export default function MapboxMap({
               coordinates: lineCoordinates,
             },
           },
-          // Point features for each location
           ...pointFeatures,
         ],
       };
 
-      // 2. Add the source to the map
-      map.current!.addSource(pathSourceId, {
-        type: "geojson",
-        data: geojsonData as any,
-      });
+      try {
+        map.current!.addSource(pathSourceId, {
+          type: "geojson",
+          data: geojsonData as any,
+        });
 
-      // 3. Add the line layer for the path
-      map.current!.addLayer({
-        id: pathLineLayerId,
-        type: "line",
-        source: pathSourceId,
-        paint: {
-          "line-color": color.base,
-          "line-width": 2,
-          "line-opacity": 0.8,
-        },
-        filter: ["==", "$type", "LineString"], // Only apply to the line feature
-      });
+        map.current!.addLayer({
+          id: pathLineLayerId,
+          type: "line",
+          source: pathSourceId,
+          paint: {
+            "line-color": color.base,
+            "line-width": 3,
+            "line-opacity": 0.8,
+          },
+          filter: ["==", "$type", "LineString"],
+          layout: {
+            visibility: layersVisible.sharkPaths ? "visible" : "none",
+          },
+        });
 
-      // 4. Add the circle layer for the points
-      map.current!.addLayer({
-        id: pathPointsLayerId,
-        type: "circle",
-        source: pathSourceId,
-        paint: {
-          // Style points based on their index (age)
-          "circle-radius": [
-            "case",
-            ["==", ["get", "is_latest"], true],
-            8, // Larger radius for the latest point
-            5,
-          ],
-          "circle-color": [
-            "interpolate",
-            ["linear"],
-            ["get", "point_index"],
-            0,
-            color.light, // Oldest: light color
-            shark.location.length - 1,
-            color.base, // Newest: dark color
-          ],
-          "circle-stroke-color": "#ffffff",
-          "circle-stroke-width": 1.5,
-        },
-        filter: ["==", "$type", "Point"], // Only apply to point features
-      });
+        map.current!.addLayer({
+          id: pathPointsLayerId,
+          type: "circle",
+          source: pathSourceId,
+          paint: {
+            "circle-radius": [
+              "case",
+              ["==", ["get", "is_latest"], true],
+              10,
+              6,
+            ],
+            "circle-color": [
+              "interpolate",
+              ["linear"],
+              ["get", "point_index"],
+              0,
+              color.light,
+              shark.location.length - 1,
+              color.base,
+            ],
+            "circle-stroke-color": "#ffffff",
+            "circle-stroke-width": 2,
+          },
+          filter: ["==", "$type", "Point"],
+          layout: {
+            visibility: layersVisible.sharkPoints ? "visible" : "none",
+          },
+        });
 
-      // 5. Add click interaction for the points
+        console.log(`✅ [${shark.id}] Layers added successfully`);
+      } catch (err) {
+        console.error(
+          `❌ FAILED TO ADD SOURCE/LAYER FOR SHARK ${shark.id}:`,
+          err
+        );
+      }
+
       map.current!.on("click", pathPointsLayerId, (e) => {
         if (!map.current || !e.features?.[0]) return;
         const props = e.features[0].properties;
         const coordinates = (e.features[0].geometry as any).coordinates.slice();
 
+        let propertiesHTML = "";
+        if (props) {
+          const excludedProps = new Set([
+            "point_index",
+            "is_latest",
+            "location",
+          ]);
+          for (const [key, value] of Object.entries(props)) {
+            if (!excludedProps.has(key)) {
+              propertiesHTML += `<p class="text-sm text-gray-700 capitalize">${key}: ${value}</p>`;
+            }
+          }
+        }
+
         const popupHTML = `
-          <div class="p-2 font-sans">
-            <h3 class="font-bold text-lg" style="color: ${color.base};">${
-          props?.sharkName
-        }</h3>
-            <p class="text-sm text-gray-700">Species: ${props?.sharkSpecies}</p>
-            <p class="text-sm text-gray-700">Activity: ${props?.doing}</p>
-            <p class="text-xs text-gray-500">
+          <div class="p-2 font-sans" style="max-height: 200px; overflow-y: auto;">
+            <h3 class="font-bold text-lg" style="color: ${color.base};">
+              Shark ID: ${props?.id}
+            </h3>
+            ${propertiesHTML}
+            <p class="text-xs text-gray-500 mt-2">
               Lng: ${coordinates[0].toFixed(4)}, Lat: ${coordinates[1].toFixed(
           4
         )}
@@ -457,7 +591,6 @@ export default function MapboxMap({
           .addTo(map.current);
       });
 
-      // Change cursor to pointer on hover
       map.current!.on("mouseenter", pathPointsLayerId, () => {
         if (map.current) map.current.getCanvas().style.cursor = "pointer";
       });
@@ -467,111 +600,24 @@ export default function MapboxMap({
     });
   }
 
-  /* async function setupOceanParticles(mapBounds: mapboxgl.LngLatBounds) {
-    if (!map.current) return;
-
-    const bounds = {
-      minLat: mapBounds.getSouth(),
-      maxLat: mapBounds.getNorth(),
-      minLon: mapBounds.getWest(),
-      maxLon: mapBounds.getEast(),
-    };
-
-    const container = map.current.getCanvas();
-    particleSystem.current = new OceanParticles(
-      container.width,
-      container.height,
-      bounds,
-      5000
-    );
-
-    particleSystem.current.setMap(map.current);
-
-    console.log("Fetching ocean current data for the visible area...");
-    const currentData = await fetchOceanCurrentField({
-      north: bounds.maxLat,
-      south: bounds.minLat,
-      west: bounds.minLon,
-      east: bounds.maxLon,
-    });
-
-    if (particleSystem.current) {
-      console.log(
-        "Ocean current data loaded:",
-        currentData.length,
-        "data points"
-      );
-      particleSystem.current.setCurrentField(currentData);
-    }
-
-    addParticleLayer(bounds);
-    startParticleAnimation();
-    setupResizeHandler();
-  }
-
-  function addParticleLayer(bounds: {
-    minLat: number;
-    maxLat: number;
-    minLon: number;
-    maxLon: number;
-  }) {
-    if (!map.current || !particleSystem.current) return;
-
-    map.current.addSource("ocean-particles", {
-      type: "canvas" as any,
-      canvas: particleSystem.current.getCanvas(),
-      coordinates: [
-        [bounds.minLon - 1, bounds.maxLat + 1],
-        [bounds.maxLon + 1, bounds.maxLat + 1],
-        [bounds.maxLon + 1, bounds.minLat - 1],
-        [bounds.minLon - 1, bounds.minLat - 1],
-      ],
-      animate: true,
-    });
-
-    map.current.addLayer({
-      id: "ocean-particle-layer",
-      type: "raster",
-      source: "ocean-particles",
-      paint: {
-        "raster-opacity": 0.7,
-        "raster-fade-duration": 0,
-      },
-    });
-  }
-
-  function startParticleAnimation() {
-    const animate = () => {
-      if (particleSystem.current && map.current) {
-        particleSystem.current.update();
-        map.current.triggerRepaint();
-        requestAnimationFrame(animate);
-      }
-    };
-    animate();
-  }
-
-  function setupResizeHandler() {
-    if (!map.current) return;
-
-    map.current.on("resize", () => {
-      if (particleSystem.current && map.current) {
-        const canvas = map.current.getCanvas();
-        particleSystem.current.resize(canvas.width, canvas.height);
-      }
-    });
-  } */
-
   function setupSharkHeatmap() {
     if (!map.current) return;
 
-    // 1. Collect all points from all sharks in SAMPLE_SHARK_PATH
-    const allSharkPoints = SAMPLE_SHARK_PATH.flatMap((shark) =>
+    const filteredData = getFilteredSharkData();
+    if (filteredData.length === 0) {
+      console.log("⚠️ No shark data matches current filter for heatmap");
+      return;
+    }
+
+    console.log("🔥 Setting up shark heatmap with filter:", activityFilter);
+
+    const allSharkPoints = filteredData.flatMap((shark) =>
       shark.location.map((point) => ({
-        ...point,
+        type: "Feature",
+        geometry: point.geometry,
         properties: {
-          doing: point.doing,
-          intensity: 1.0, // Assign a weight for the heatmap
+          ...point.properties,
+          intensity: 1.0,
         },
       }))
     );
@@ -581,47 +627,87 @@ export default function MapboxMap({
       features: allSharkPoints,
     };
 
-    // 2. Add the GeoJSON source with the collected points
     map.current.addSource("shark-activity", {
       type: "geojson",
       data: sharkActivityData as any,
     });
 
-    // 3. Add the heatmap layer
     map.current.addLayer({
       id: "shark-heatmap",
       type: "heatmap",
       source: "shark-activity",
       paint: {
-        // Use the 'intensity' property of each point as its weight
-        "heatmap-weight": ["get", "intensity"],
-        // Adjust the global intensity of the heatmap
-        "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 0, 1, 9, 3],
-        // Color ramp for the heatmap
+        "heatmap-weight": [
+          "interpolate",
+          ["linear"],
+          ["get", "intensity"],
+          0,
+          0,
+          1,
+          1,
+        ],
+        // Reduced intensity for subtler effect
+        "heatmap-intensity": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          0,
+          0.5,
+          5,
+          0.8,
+          9,
+          1.2,
+        ],
+        // Updated color ramp with more granular steps
         "heatmap-color": [
           "interpolate",
           ["linear"],
           ["heatmap-density"],
           0,
           "rgba(0, 0, 0, 0)",
-          0.2,
-          "rgba(135, 206, 250, 0.4)", // Light Blue
-          0.4,
-          "rgba(144, 238, 144, 0.5)", // Light Green
-          0.6,
+          0.1,
+          "rgba(135, 206, 250, 0.2)", // Very light blue
+          0.3,
+          "rgba(135, 206, 250, 0.4)", // Light blue
+          0.5,
+          "rgba(144, 238, 144, 0.5)", // Light green
+          0.7,
           "rgba(255, 255, 153, 0.6)", // Yellow
-          0.8,
+          0.85,
           "rgba(255, 140, 66, 0.7)", // Orange
           1,
           "rgba(235, 100, 52, 0.8)", // Red
         ],
-        // Adjust radius based on zoom level
-        "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 0, 25, 9, 100],
-        // Opacity of the entire heatmap layer
-        "heatmap-opacity": 0.8,
+        // Significantly reduced radius for finer grain
+        "heatmap-radius": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          0,
+          8, // Much smaller at low zoom
+          3,
+          12,
+          5,
+          18,
+          7,
+          25,
+          9,
+          35, // Reduced from 100
+        ],
+        // Slightly reduced opacity
+        "heatmap-opacity": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          0,
+          0.6,
+          5,
+          0.7,
+          9,
+          0.8,
+        ],
       },
       layout: {
-        // Set initial visibility based on state
         visibility: layersVisible.sharkActivity ? "visible" : "none",
       },
     });
@@ -635,20 +721,18 @@ export default function MapboxMap({
     map.current.on("click", (e) => {
       if (!map.current) return;
 
-      // Prioritize shark path points. Check if the click was on any of them.
-      const sharkPointLayerIds = SAMPLE_SHARK_PATH.map(
+      const filteredData = getFilteredSharkData();
+      const sharkPointLayerIds = filteredData.map(
         (shark) => `shark-path-points-${shark.id}`
       );
       const pointFeatures = map.current.queryRenderedFeatures(e.point, {
         layers: sharkPointLayerIds,
       });
 
-      // If a point was clicked, its own handler will create a popup, so we do nothing here.
       if (pointFeatures.length > 0) {
         return;
       }
 
-      // If no point was clicked, proceed with the heatmap interaction.
       const features = map.current.queryRenderedFeatures(e.point, {
         layers: ["shark-heatmap"],
       });
@@ -677,128 +761,9 @@ export default function MapboxMap({
     });
   }
 
-  /* async function setupWindyMarkers() {
-    if (!map.current) return;
-
-    try {
-      const markers = await addWindyMarkers(map.current, GULF_SAMPLE_POINTS);
-      windyMarkers.current = markers;
-    } catch (err) {
-      console.error("❌ Fatal error in addWindyMarkers:", err);
-    }
-  }
-
-  async function setupOceanLandLayer(mapBounds: mapboxgl.LngLatBounds) {
-    if (!map.current) return;
-
-    const bounds = {
-      north: mapBounds.getNorth(),
-      south: mapBounds.getSouth(),
-      east: mapBounds.getEast(),
-      west: mapBounds.getWest(),
-    };
-
-    const oceanLandData = getOceanLandGeoJSON(bounds);
-    console.log(
-      "Ocean/Land data generated:",
-      oceanLandData.features.length,
-      "points"
-    );
-
-    map.current.addSource("ocean-land-data", {
-      type: "geojson",
-      data: oceanLandData as any,
-    });
-
-    map.current.addLayer({
-      id: "ocean-layer",
-      type: "circle",
-      source: "ocean-land-data",
-      filter: ["==", ["get", "type"], "ocean"],
-      paint: {
-        "circle-radius": 4,
-        "circle-color": "#0077be",
-        "circle-opacity": 0.6,
-      },
-    });
-
-    map.current.addLayer({
-      id: "land-layer",
-      type: "circle",
-      source: "ocean-land-data",
-      filter: ["==", ["get", "type"], "land"],
-      paint: {
-        "circle-radius": 4,
-        "circle-color": "#2d5016",
-        "circle-opacity": 0.6,
-      },
-    });
-
-    setupOceanLandInteractions();
-  }
-
-  function setupOceanLandInteractions() {
-    if (!map.current) return;
-
-    map.current.on("click", "ocean-layer", (e) => {
-      if (!map.current || !e.features?.[0]) return;
-
-      const coordinates = (e.features[0].geometry as any).coordinates.slice();
-      const type = e.features[0].properties?.type;
-
-      new mapboxgl.Popup()
-        .setLngLat(coordinates)
-        .setHTML(
-          `
-          <div class="p-2">
-            <h3 class="font-bold text-blue-600">🌊 Ocean</h3>
-            <p class="text-sm">Type: ${type}</p>
-            <p class="text-xs text-gray-600">Lat: ${coordinates[1].toFixed(
-              4
-            )}, Lng: ${coordinates[0].toFixed(4)}</p>
-          </div>
-        `
-        )
-        .addTo(map.current);
-    });
-
-    map.current.on("click", "land-layer", (e) => {
-      if (!map.current || !e.features?.[0]) return;
-
-      const coordinates = (e.features[0].geometry as any).coordinates.slice();
-      const type = e.features[0].properties?.type;
-
-      new mapboxgl.Popup()
-        .setLngLat(coordinates)
-        .setHTML(
-          `
-          <div class="p-2">
-            <h3 class="font-bold text-green-700">🌍 Land</h3>
-            <p class="text-sm">Type: ${type}</p>
-            <p class="text-xs text-gray-600">Lat: ${coordinates[1].toFixed(
-              4
-            )}, Lng: ${coordinates[0].toFixed(4)}</p>
-          </div>
-        `
-        )
-        .addTo(map.current);
-    });
-
-    ["ocean-layer", "land-layer"].forEach((layerId) => {
-      map.current!.on("mouseenter", layerId, () => {
-        if (map.current) map.current.getCanvas().style.cursor = "pointer";
-      });
-
-      map.current!.on("mouseleave", layerId, () => {
-        if (map.current) map.current.getCanvas().style.cursor = "";
-      });
-    });
-  } */
-
   function updateLayerVisibility() {
     if (!map.current) return;
 
-    // Update standard layers
     if (map.current.getLayer("shark-heatmap")) {
       map.current.setLayoutProperty(
         "shark-heatmap",
@@ -807,8 +772,8 @@ export default function MapboxMap({
       );
     }
 
-    // Toggle visibility for each shark path
-    SAMPLE_SHARK_PATH.forEach((shark) => {
+    const filteredData = getFilteredSharkData();
+    filteredData.forEach((shark) => {
       const pathLineLayerId = `shark-path-line-${shark.id}`;
       const pathPointsLayerId = `shark-path-points-${shark.id}`;
 
@@ -828,31 +793,6 @@ export default function MapboxMap({
       }
     });
 
-    if (map.current.getLayer("ocean-particle-layer")) {
-      map.current.setLayoutProperty(
-        "ocean-particle-layer",
-        "visibility",
-        layersVisible.oceanParticles ? "visible" : "none"
-      );
-    }
-
-    if (map.current.getLayer("ocean-layer")) {
-      map.current.setLayoutProperty(
-        "ocean-layer",
-        "visibility",
-        layersVisible.oceanLand ? "visible" : "none"
-      );
-    }
-
-    if (map.current.getLayer("land-layer")) {
-      map.current.setLayoutProperty(
-        "land-layer",
-        "visibility",
-        layersVisible.oceanLand ? "visible" : "none"
-      );
-    }
-
-    // Update GIBS layers dynamically
     Object.values(GIBS_LAYERS).forEach((config) => {
       if (map.current!.getLayer(config.id)) {
         map.current!.setLayoutProperty(
@@ -863,7 +803,6 @@ export default function MapboxMap({
       }
     });
 
-    // Update markers
     windyMarkers.current.forEach((marker) => {
       const element = marker.getElement();
       element.style.display = layersVisible.windyData ? "block" : "none";
@@ -875,15 +814,6 @@ export default function MapboxMap({
       ...prev,
       [layer]: !prev[layer],
     }));
-  }
-
-  function cleanup() {
-    windyMarkers.current.forEach((marker) => marker.remove());
-    windyMarkers.current = [];
-    particleSystem.current?.destroy();
-    particleSystem.current = null;
-    map.current?.remove();
-    map.current = null;
   }
 
   if (error) {
@@ -904,6 +834,8 @@ export default function MapboxMap({
         onToggleLayer={toggleLayer}
         viewport={viewport}
         gibsLayers={GIBS_LAYERS}
+        activityFilter={activityFilter}
+        onActivityFilterChange={setActivityFilter}
       />
     </>
   );

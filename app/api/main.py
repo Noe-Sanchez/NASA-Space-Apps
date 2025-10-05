@@ -1,4 +1,6 @@
+from tkinter.filedialog import test
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict
 from datetime import datetime, timezone
 from .config import settings
@@ -9,8 +11,22 @@ import json
 import geopandas as gpd
 import pandas as pd
 from shapely.geometry import Point, Polygon
+import os
+from pydantic import BaseModel
 
 app = FastAPI()
+
+origins = [
+    "http://localhost:4321",  # The origin of your frontend app
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- Data Loading with GeoPandas ---
 def load_shark_data(file_path: str) -> gpd.GeoDataFrame:
@@ -45,8 +61,10 @@ def load_shark_data(file_path: str) -> gpd.GeoDataFrame:
     return gdf
 
 # Load data at startup
-# Create a file named 'shark.geojson' in the 'app/api/' directory with your data.
-shark_gdf = load_shark_data('app/api/shark.geojson')
+# Construct an absolute path to the GeoJSON file
+script_dir = os.path.dirname(os.path.abspath(__file__))
+file_path = os.path.join(script_dir, 'shark.geojson')
+shark_gdf = load_shark_data(file_path)
 
 
 genai.configure(api_key=settings.GEMINI_API_KEY)
@@ -58,7 +76,7 @@ def read_root():
 @app.get("/sharks")
 def get_sharks():
     # Convert all results to the desired JSON format
-    results = json.loads(shark_gdf.to_json())['features']
+    results = json.loads(shark_gdf.to_json(default=str))['features']
 
     grouped_sharks = {}
     for feature in results:
@@ -80,11 +98,13 @@ def get_sharks():
     return {"sharks": grouped_sharks}
     
 
+class AnalysisRequest(BaseModel):
+    bounds: List[List[float]]
+
 @app.post("/sharks/analyze")
-def analyze_shark_data(
-  bounds: List[List[float]],
-  test: bool
-):
+def analyze_shark_data(request: AnalysisRequest):
+    bounds = request.bounds
+    
     if not bounds:
         return {"error": "Please provide bounds."}
     
@@ -94,37 +114,31 @@ def analyze_shark_data(
     if len(bounds[0]) != 2 or len(bounds[1]) != 2:
         return {"error": "Each bound must contain exactly two coordinates (latitude and longitude)."}
     
+    # --- Query with GeoPandas ---
+    bounding_box = Polygon([
+        (bounds[0][0], bounds[0][1]), 
+        (bounds[1][0], bounds[0][1]),
+        (bounds[1][0], bounds[1][1]), 
+        (bounds[0][0], bounds[1][1]),
+        (bounds[0][0], bounds[0][1])
+    ])
 
-    if not test:
-        # --- Query with GeoPandas ---
-        bounding_box = Polygon([
-            (bounds[0][0], bounds[0][1]), [bounds[1][0], bounds[0][1]],
-            [bounds[1][0], bounds[1][1]], [bounds[0][0], bounds[1][1]],
-            [bounds[0][0], bounds[0][1]]
-        ])
-
-        spatial_mask = shark_gdf.within(bounding_box)
-        
-        results_gdf = shark_gdf[spatial_mask]
-
-        if results_gdf.empty:
-            return {"error": "No shark data found for the given criteria."}
-        
-        # Limit to avoid huge prompts
-        results_gdf = results_gdf.head(100)
-        
-        # Convert to a list of dictionaries for the prompt
-        results = json.loads(results_gdf.to_json())['features']
-
-    else:
-        results = []
+    spatial_mask = shark_gdf.within(bounding_box)
     
-    # We get the raw data from the database
-    
+    results_gdf = shark_gdf[spatial_mask]
 
+    if results_gdf.empty:
+        return {"error": "No shark data found for the given criteria."}
+    
+    # Limit to avoid huge prompts
+    results_gdf = results_gdf.head(100)
+    
+    # Convert to a list of dictionaries for the prompt
+    results = json.loads(results_gdf.to_json(default=str))['features']
+    
     formatted_data = json.dumps(results, indent=2, default=str)
 
-    # --- 3. Create the prompt for Gemini ---
+    # --- Create the prompt for Gemini ---
     prompt = f"""
     You are a marine biologist analyzing shark tracking data.
     Based on the following list of shark ping data (in GeoJSON Feature format), provide a concise summary of the overall activity.
@@ -133,7 +147,10 @@ def analyze_shark_data(
     Limitations:
     - Only use the provided data; do not assume any external knowledge.
     - Focus on high-level patterns rather than individual entries.
-    - Keep the analysis under 200 words.
+    - Keep the analysis under 100 words.
+    - Think fast.
+    - Don't mention coordinates or IDs, just a general aspect.
+    - Just give the response in plain text, no JSON or markdown formatting.
 
     Data:
     {formatted_data}
@@ -141,12 +158,11 @@ def analyze_shark_data(
     Analysis:
     """
 
-    # --- 4. Call the Gemini API ---
+    # --- Call the Gemini API ---
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash') # Or another suitable model
+        model = genai.GenerativeModel('gemini-2.5-flash')
         response = model.generate_content(prompt)
         
-        # --- 5. Return the result ---
         return {"analysis": response.text}
     
     except Exception as e:
