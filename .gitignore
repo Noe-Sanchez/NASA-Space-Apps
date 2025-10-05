@@ -32,4 +32,6 @@ Thumbs.db
 predictive_model/py_files/spaceapp
 .predictive_model/py_files/spaceapp
 
+predictive_model/py_files/db_nasa_data
+predictive_model/py_files/db_plots
 
