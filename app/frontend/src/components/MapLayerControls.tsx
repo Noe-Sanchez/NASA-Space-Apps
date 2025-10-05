@@ -1,97 +1,106 @@
-import { memo } from 'react';
+import { memo } from "react";
+import { type Viewport, type ExtendedLayerVisibility } from "./MapboxMap";
 
 export interface LayerVisibility {
   sharkActivity: boolean;
-  oceanParticles: boolean;
-  windyData: boolean;
-  oceanLand: boolean;
+  sharkPaths: boolean;
+  sharkPoints: boolean;
+  [key: string]: boolean; // Allow dynamic GIBS layers
 }
 
 interface MapLayerControlsProps {
-  layersVisible: LayerVisibility;
-  onToggleLayer: (layer: keyof LayerVisibility) => void;
-  viewport: {
-    center: { lng: number; lat: number };
-    zoom: number;
-  };
+  layersVisible: ExtendedLayerVisibility;
+  onToggleLayer: (layer: keyof ExtendedLayerVisibility) => void;
+  viewport: Viewport;
+  gibsLayers?: Record<
+    string,
+    { id: string; name: string; description: string }
+  >;
 }
 
 export const MapLayerControls = memo(function MapLayerControls({
   layersVisible,
   onToggleLayer,
-  viewport
+  viewport,
+  gibsLayers = {},
 }: MapLayerControlsProps) {
   return (
-    <div className="absolute top-4 left-4 bg-white rounded-lg shadow-lg p-3 z-10 max-w-xs">
-      <h3 className="text-sm font-semibold mb-2 text-gray-800">Map Layers</h3>
+    <div className="absolute top-4 left-4 bg-white rounded-lg shadow-lg p-4 max-w-xs">
+      <h3 className="font-bold text-lg mb-3">Map Layers</h3>
 
-      <div className="space-y-2">
+      {/* Standard Layers */}
+      <div className="space-y-2 mb-4">
+        <h4 className="font-semibold text-sm text-gray-600">Shark Layers</h4>
         <LayerToggle
+          label="Shark Heatmap"
           checked={layersVisible.sharkActivity}
-          onChange={() => onToggleLayer('sharkActivity')}
-          label="🦈 Shark Activity Heatmap"
+          onChange={() => onToggleLayer("sharkActivity")}
         />
-
         <LayerToggle
-          checked={layersVisible.oceanParticles}
-          onChange={() => onToggleLayer('oceanParticles')}
-          label="💧 Ocean Currents"
+          label="Shark Paths"
+          checked={layersVisible.sharkPaths}
+          onChange={() => onToggleLayer("sharkPaths")}
         />
-
         <LayerToggle
-          checked={layersVisible.windyData}
-          onChange={() => onToggleLayer('windyData')}
-          label="🌊 Wave Data (Windy)"
-        />
-
-        <LayerToggle
-          checked={layersVisible.oceanLand}
-          onChange={() => onToggleLayer('oceanLand')}
-          label="🌍 Ocean/Land Classification"
+          label="Shark Points"
+          checked={layersVisible.sharkPoints}
+          onChange={() => onToggleLayer("sharkPoints")}
         />
       </div>
 
-      <ViewportInfo viewport={viewport} />
+      {/* NASA GIBS Layers */}
+      {Object.keys(gibsLayers).length > 0 && (
+        <div className="space-y-2 border-t pt-3">
+          <h4 className="font-semibold text-sm text-gray-600">
+            NASA GIBS Data
+          </h4>
+          {Object.values(gibsLayers).map((layer) => (
+            <LayerToggle
+              key={layer.id}
+              label={layer.name}
+              checked={layersVisible[layer.id] || false}
+              onChange={() =>
+                onToggleLayer(layer.id as keyof ExtendedLayerVisibility)
+              }
+              description={layer.description}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Viewport Info */}
+      <div className="mt-4 pt-3 border-t text-xs text-gray-500">
+        <p>Zoom: {viewport.zoom.toFixed(2)}</p>
+        <p>Lat: {viewport.center.lat.toFixed(4)}</p>
+        <p>Lng: {viewport.center.lng.toFixed(4)}</p>
+      </div>
     </div>
   );
 });
 
-interface LayerToggleProps {
+function LayerToggle({
+  label,
+  checked,
+  onChange,
+  description,
+}: {
+  label: string;
   checked: boolean;
   onChange: () => void;
-  label: string;
-}
-
-const LayerToggle = memo(function LayerToggle({ checked, onChange, label }: LayerToggleProps) {
+  description?: string;
+}) {
   return (
-    <label className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-1.5 rounded">
+    <label className="flex items-start cursor-pointer hover:bg-gray-50 p-2 rounded">
       <input
         type="checkbox"
         checked={checked}
         onChange={onChange}
-        className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-2 focus:ring-blue-500"
+        className="mt-1 mr-3"
       />
-      <span className="text-sm text-gray-700">{label}</span>
+      <div className="flex-1">
+        <span className="text-sm font-medium text-gray-800">{label}</span>
+        {description && <p className="text-xs text-gray-500">{description}</p>}
+      </div>
     </label>
   );
-});
-
-interface ViewportInfoProps {
-  viewport: {
-    center: { lng: number; lat: number };
-    zoom: number;
-  };
 }
-
-const ViewportInfo = memo(function ViewportInfo({ viewport }: ViewportInfoProps) {
-  return (
-    <div className="mt-3 pt-3 border-t border-gray-200">
-      <h4 className="text-xs font-semibold text-gray-600 mb-1">Current View</h4>
-      <div className="text-xs text-gray-500 space-y-0.5">
-        <div>Lat: {viewport.center.lat.toFixed(4)}</div>
-        <div>Lng: {viewport.center.lng.toFixed(4)}</div>
-        <div>Zoom: {viewport.zoom.toFixed(2)}</div>
-      </div>
-    </div>
-  );
-});
