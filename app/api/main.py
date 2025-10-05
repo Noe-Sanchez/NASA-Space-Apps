@@ -1,23 +1,20 @@
-from tkinter.filedialog import test
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Dict
+from typing import List
 from datetime import datetime, timezone
 from .config import settings
-from .types import AnimalPing, LayerRequest
+from .types import AnimalPing, LayerRequest, AnalysisRequest
 import google.generativeai as genai
-import requests
 import json
 import geopandas as gpd
 import pandas as pd
 from shapely.geometry import Point, Polygon
 import os
-from pydantic import BaseModel
 
 app = FastAPI()
 
 origins = [
-    "http://localhost:4321",  # The origin of your frontend app
+    "http://localhost:4321",
 ]
 
 app.add_middleware(
@@ -60,13 +57,14 @@ def load_shark_data(file_path: str) -> gpd.GeoDataFrame:
     gdf.set_crs("EPSG:4326", inplace=True)
     return gdf
 
-# Load data at startup
-# Construct an absolute path to the GeoJSON file
+# Construct path to data
 script_dir = os.path.dirname(os.path.abspath(__file__))
 file_path = os.path.join(script_dir, 'shark.geojson')
+
+# Have it stored
 shark_gdf = load_shark_data(file_path)
 
-
+# Gemini init
 genai.configure(api_key=settings.GEMINI_API_KEY)
 
 @app.get("/")
@@ -98,9 +96,6 @@ def get_sharks():
     return {"sharks": grouped_sharks}
     
 
-class AnalysisRequest(BaseModel):
-    bounds: List[List[float]]
-
 @app.post("/sharks/analyze")
 def analyze_shark_data(request: AnalysisRequest):
     bounds = request.bounds
@@ -130,13 +125,20 @@ def analyze_shark_data(request: AnalysisRequest):
     if results_gdf.empty:
         return {"error": "No shark data found for the given criteria."}
     
+    total_points = len(results_gdf)
+    limited_to_500 = total_points > 500
+
     # Limit to avoid huge prompts
-    results_gdf = results_gdf.head(100)
+    results_gdf = results_gdf.head(200)
     
     # Convert to a list of dictionaries for the prompt
     results = json.loads(results_gdf.to_json(default=str))['features']
     
     formatted_data = json.dumps(results, indent=2, default=str)
+
+    extra_prompt = ""
+    if limited_to_500:
+      extra_prompt = "In your response, add a suggestion to zoom in on the area to get more detailed interpretation since there are many data points."
 
     # --- Create the prompt for Gemini ---
     prompt = f"""
@@ -144,12 +146,15 @@ def analyze_shark_data(request: AnalysisRequest):
     Based on the following list of shark ping data (in GeoJSON Feature format), provide a concise summary of the overall activity.
     Identify any potential patterns, such as common areas or interesting behaviors inferred from the 'behavior' property.
 
+    {extra_prompt}
+
     Limitations:
     - Only use the provided data; do not assume any external knowledge.
     - Focus on high-level patterns rather than individual entries.
     - Keep the analysis under 100 words.
     - Think fast.
-    - Don't mention coordinates or IDs, just a general aspect.
+    - Don't mention coordinates or IDs of the sharks, DONT EVER MENTION THE IDS, just a general aspect.
+    - Do mention the amount of sharks if they are frequenting the area if there are too many dont mention the amount.
     - Just give the response in plain text, no JSON or markdown formatting.
 
     Data:
@@ -167,55 +172,3 @@ def analyze_shark_data(request: AnalysisRequest):
     
     except Exception as e:
         return {"error": f"Failed to get analysis from Gemini: {str(e)}"}
-
-
-@app.get("/layer")
-def get_layer(
-  layer_request: LayerRequest
-):
-    if layer_request.layer not in AVAILABLE_LAYERS:
-        return {"error": f"Layer '{layer_request.layer}' is not available. Available layers: {', '.join(AVAILABLE_LAYERS)}"}  
-
-    # This endpoint still uses a DB connection.
-    # If you want to change this, you'll need to provide the data source.
-    # For now, I will comment out the database logic.
-    # db = client['layers']
-    # collection = db[layer_request.layer]
-    # layer_data = list(collection.find())
-
-    # return {"layer": layer_request.layer, "data": layer_data}
-    return {"error": "Layer data source is not configured for file-based access."}
-
-
-@app.post("/animal/ping")
-def new_animal_entry(ping_data: AnimalPing):
-    # This endpoint was for writing data. With a file-based approach,
-    # appending to the JSON file and reloading the GeoDataFrame would be complex
-    # and not ideal for a running server.
-    # I will disable the data writing part.
-    current_datetime = datetime.now(timezone.utc)
-
-    # ! The logic to append to the JSON file and reload the GDF is not implemented.
-    # ! This would require careful handling of file locks to prevent race conditions.
-
-    return {
-        "status": "New animal entry received (not saved)",
-        "animal": {
-            "id": ping_data.id,
-            "timestamp": current_datetime,
-            "temp": ping_data.temp,
-            "pressure": ping_data.pressure,
-            "GPS": {
-                "lat": ping_data.GPS.lat,
-                "lon": ping_data.GPS.lon,
-                "alt": ping_data.GPS.alt
-            },
-            "q": {
-                "x": ping_data.q.x,
-                "y": ping_data.q.y,
-                "z": ping_data.q.z,
-                "w": ping_data.q.w
-            },
-            "doing": "Exploring (from model)"
-        }
-    }

@@ -1,13 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
-
 import { OceanParticles } from "@/lib/OceanParticles";
-import { fetchOceanCurrentField } from "@/lib/windyApi";
 import { type SharkActivityData, type SharkHotspot } from "@/lib/sharkData";
-import { addWindyMarkers, GULF_SAMPLE_POINTS } from "@/lib/mapHelpers";
 import { createSharkPopupHTML } from "@/lib/sharkPopup";
-import { getOceanLandGeoJSON } from "@/lib/earthData";
 import { MapLayerControls, type LayerVisibility } from "./MapLayerControls";
 
 export interface Viewport {
@@ -95,9 +91,9 @@ export interface ExtendedLayerVisibility extends LayerVisibility {
 export type SharkActivityCategory = "All" | "Migrating" | "Foraging";
 
 export default function MapboxMap({
-  lat = -34.5,
-  lng = 22.0,
-  zoom = 5,
+  lat = 0.0,
+  lng = 0.0,
+  zoom = 0,
   styleUrl = "mapbox://styles/mapbox/light-v11",
   className = "map h-full w-full",
   onViewportChange,

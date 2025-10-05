@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from typing import List
 
 class GPSModel(BaseModel):
     lat: float
@@ -20,3 +21,6 @@ class AnimalPing(BaseModel):
 
 class LayerRequest(BaseModel):
     layer: str
+
+class AnalysisRequest(BaseModel):
+    bounds: List[List[float]]
